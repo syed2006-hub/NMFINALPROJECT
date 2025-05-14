@@ -1,0 +1,191 @@
+import tkinter as tk
+import winsound
+from tkinter import messagebox
+import csv
+import requests
+import os
+import platform
+import threading
+from dotenv import load_dotenv
+import pygame
+
+
+load_dotenv()
+
+# Load sensor data from CSV
+def load_sensor_dataset(file_path):
+    try:
+        with open(file_path, mode='r') as file:
+            reader = csv.DictReader(file)
+            return [{"strain": float(row["strain"]), "vibration": float(row["vibration"])} for row in reader]
+    except FileNotFoundError:
+        messagebox.showerror("File Error", "sensor_data.csv not found.")
+        return []
+
+# Analyze using Gemini
+def analyze_with_gemini(data):
+    rules = (
+        "If strain > 0.8 and vibration > 0.2, then alert: 'Critical stress'. "
+        "If strain > 0.5 and vibration > 0.05, then alert: 'Moderate stress'. "
+        "Otherwise, alert: 'Normal operation'."
+    )
+
+    prompt = f"{rules} Analyze the following sensor data and tell me the status: strain = {data['strain']}, vibration = {data['vibration']}."
+
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent"
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": os.getenv('API_KEY')
+    }
+
+    messages = [{"role": "user", "parts": [{"text": prompt}]}]
+
+    try:
+        response = requests.post(url, headers=headers, json={"contents": messages})
+        result = response.json()
+        reply = result["candidates"][0]["content"]["parts"][0]["text"]
+        return reply
+    except Exception as e:
+        return f"Error: {e}"
+
+# Alert sound (using sound file)
+def play_alert(level):
+    alert_file = "emergency-alarm-69780.mp3"  # Path to your MP3 file
+
+    pygame.mixer.init()  # Initialize the mixer module
+    pygame.mixer.music.load(alert_file)  # Load the MP3 file
+
+    if level == "Critical":
+        pygame.mixer.music.play(-1, 0.0)  # Play the alert sound in a loop (if needed)
+        pygame.time.delay(5000)  # Wait for 5 seconds
+        pygame.mixer.music.stop()  # Stop the sound
+    elif level == "Moderate":
+        if platform.system()=="Windows":
+            winsound.Beep(800,1500)
+    else:
+        pass
+
+class SensorApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("🧠 Structural Health Monitoring")
+        self.root.geometry("700x500")
+        self.root.configure(bg="#1e1e2f")
+        self.root.resizable(False, False)  # Fixed size
+
+        self.index = 0
+        self.running = False
+        self.data = load_sensor_dataset("sensor_data.csv")
+
+        # Styling
+        self.font_title = ("Helvetica", 20, "bold")
+        self.font_text = ("Helvetica", 13)
+        self.bg_color = "#1e1e2f"
+        self.fg_color = "#ffffff"
+        self.accent = "#00ffc8"
+
+        # Main Center Frame
+        self.main_frame = tk.Frame(self.root, bg=self.bg_color, width=700, height=500)
+        self.main_frame.place(relx=0.5, rely=0.5, anchor="center")
+
+        # Title
+        self.title_label = tk.Label(
+            self.main_frame, text="🔧 Structural Health Monitor", font=self.font_title,
+            fg=self.accent, bg=self.bg_color
+        )
+        self.title_label.pack(pady=20)
+
+        # Sensor Data Display
+        self.sensor_display = tk.Label(
+            self.main_frame, text="Sensor Data: ", font=self.font_text,
+            fg=self.fg_color, bg=self.bg_color
+        )
+        self.sensor_display.pack(pady=10)
+
+        # Response Display
+        self.response_display = tk.Label(
+            self.main_frame, text="Waiting for input...", font=self.font_text,
+            fg=self.fg_color, bg=self.bg_color, wraplength=600, justify="center",
+            width=60, height=4  # Fixed dimensions
+        )
+        self.response_display.pack(pady=10)
+
+        # Status Indicator
+        self.status_label = tk.Label(
+            self.main_frame, text="", font=("Helvetica", 14, "bold"),
+            bg=self.bg_color
+        )
+        self.status_label.pack(pady=10)
+
+        # Buttons
+        self.button_frame = tk.Frame(self.main_frame, bg=self.bg_color)
+        self.button_frame.pack(pady=20)
+
+        self.start_btn = tk.Button(
+            self.button_frame, text="▶ Start Monitoring", width=18, bg="#2aefaa",
+            font=self.font_text, command=self.start_monitoring
+        )
+        self.start_btn.grid(row=0, column=0, padx=10)
+
+        self.stop_btn = tk.Button(
+            self.button_frame, text="⏹ Stop Monitoring", width=18, bg="#ff6f61",
+            font=self.font_text, command=self.stop_monitoring
+        )
+        self.stop_btn.grid(row=0, column=1, padx=10)
+
+    # Step 1: Show data
+    def update_ui(self):
+        if self.running and self.index < len(self.data):
+            current_data = self.data[self.index]
+
+            self.sensor_display.config(
+                text=f"Sensor Data: Strain = {current_data['strain']} | Vibration = {current_data['vibration']}"
+            )
+            self.response_display.config(text="🔄 Processing...")
+
+
+            self.root.after(300, lambda: self.process_analysis(current_data))
+        elif self.index >= len(self.data):
+            self.status_label.config(text="✅ Monitoring complete.", fg="#00ffc8")
+            self.running = False
+
+    # Step 2: Analyze after processing
+    def process_analysis(self, current_data):
+        def run_analysis():
+            response = analyze_with_gemini(current_data)
+
+            if "Critical stress" in response:
+                message = "🚨 Vibration and strain are high. Please take immediate action!"
+                self.status_label.config(text=message, fg="#ff4c4c")
+                self.response_display.config(text=message)
+                play_alert("Critical")
+            elif "Moderate stress" in response:
+                message = "⚠️ Moderate Stress Detected. Monitor closely."
+                self.status_label.config(text=message, fg="#ffaa00")
+                self.response_display.config(text=message)
+                play_alert("Moderate")
+            else:
+                message = "✅ Vibration and strain levels are normal. All systems nominal."
+                self.status_label.config(text=message, fg="#00ff7f")
+                self.response_display.config(text=message)
+
+            self.index += 1
+            self.root.after(2500, self.update_ui)
+
+        threading.Thread(target=run_analysis).start()
+
+    def start_monitoring(self):
+        if not self.running:
+            self.running = True
+            self.index = 0
+            self.update_ui()
+
+    def stop_monitoring(self):
+        self.running = False
+        self.status_label.config(text="⏸ Monitoring paused.", fg="#cccccc")
+
+# Run App
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = SensorApp(root)
+    root.mainloop()
